@@ -5,38 +5,13 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 from datasets import load_dataset
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from load_dataset import WikiTextDataset
-
-
-class LoRALinear(nn.Module):
-    def __init__(self,linear: nn.Linear, rank, alpha):
-        super().__init__()
-        self.linear = linear
-        self.old_weights_size = linear.weight.shape
-        self.r = rank
-        self.alpha = alpha
-
-        self.A = nn.Parameter(torch.randn(self.r, self.old_weights_size[1]))
-        self.B = nn.Parameter(torch.zeros(self.old_weights_size[0], self.r))
-
-        self.linear.weight.requires_grad = False
-        if self.linear.bias is not None:
-            self.linear.bias.requires_grad = False
-
-    def forward(self,x):
-        deltaW = self.B @ self.A
-        x = self.linear(x) + (self.alpha/self.r)* (x @ deltaW)
-        return x
-
-    def merge(self):
-        with torch.no_grad():
-            self.linear.weight += (self.alpha / self.r) * self.B @ self.A
 
 
 if __name__ == "__main__":
@@ -48,10 +23,8 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    # --- device: Colab ---
     if torch.cuda.is_available():
         device = torch.device("cuda")
-    # --- device: Mac MPS ---
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
@@ -60,26 +33,14 @@ if __name__ == "__main__":
 
     model = GPT2LMHeadModel.from_pretrained("gpt2")
 
-    rank = 4
-    alpha = rank
-    print('Freezing weights')
-    for p in model.parameters():
-        p.requires_grad = False
-
-    print('Replacing layers')
-    for block in model.transformer.h:
-        block.attn.c_attn = LoRALinear(block.attn.c_attn, rank=rank, alpha=alpha)
-
-    print('Verificando sanidade...')
-
-    for block in model.transformer.h:
-        lora = block.attn.c_attn
-        assert (lora.B @ lora.A).abs().max().item() == 0.0, "ΔW não é zero no início"
-
-    for name, p in model.named_parameters():
-        if p.requires_grad:
-            assert 'lora' not in name.lower() or ('A' in name or 'B' in name), \
-                f"Parâmetro inesperado com grad: {name}"
+    target_module_names = []
+    initial_weights = {}
+    for idx, _ in enumerate(model.transformer.h):
+        target_module_names.append(f"transformer.h.{idx}.attn.c_attn")
+        target_module_names.append(f"transformer.h.{idx}.mlp.c_fc")
+        target_module_names.append(f"transformer.h.{idx}.mlp.c_proj")
+    for module_name in target_module_names:
+        initial_weights[module_name] = model.get_submodule(module_name).weight.detach().cpu().float().clone()
 
     n_treinaveis = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
@@ -87,7 +48,7 @@ if __name__ == "__main__":
 
     model = model.to(device)
 
-    max_lenght = 128
+    max_length = 128
     batch_size = 1
     num_workers = 2
     num_epochs = 3
@@ -106,8 +67,8 @@ if __name__ == "__main__":
     if max_test_examples is not None:
         test_texts = test_texts[:max_test_examples]
 
-    train_dataset = WikiTextDataset(train_texts, tokenizer, max_length=max_lenght)
-    test_dataset = WikiTextDataset(test_texts, tokenizer, max_length=max_lenght)
+    train_dataset = WikiTextDataset(train_texts, tokenizer, max_length=max_length)
+    test_dataset = WikiTextDataset(test_texts, tokenizer, max_length=max_length)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
@@ -116,20 +77,18 @@ if __name__ == "__main__":
     else:
         output_root = Path("outputs/cla_lora_runs")
     run_name = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    run_dir = output_root / "lora" / run_name
+    run_dir = output_root / "full_finetune" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
     config = {
-        "method": "lora",
+        "method": "full_finetune",
         "model_name": "gpt2",
         "dataset_name": "Salesforce/wikitext",
         "dataset_config": "wikitext-2-raw-v1",
-        "max_length": max_lenght,
+        "max_length": max_length,
         "batch_size": batch_size,
         "num_workers": num_workers,
         "num_epochs": num_epochs,
-        "rank": rank,
-        "alpha": alpha,
         "seed": seed,
         "device": str(device),
         "output_path": str(run_dir),
@@ -139,7 +98,7 @@ if __name__ == "__main__":
         json.dump(config, f, indent=2, ensure_ascii=False)
 
     optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
+        model.parameters(),
         lr=2e-4,
         weight_decay=0.01
     )
@@ -223,14 +182,13 @@ if __name__ == "__main__":
     delta_map = {}
     svd_map = {}
     layer_stats = {}
-    for idx, block in enumerate(model.transformer.h):
-        layer_name = f"transformer.h.{idx}.attn.c_attn"
-        lora = block.attn.c_attn
-        delta_weight = ((alpha / rank) * (lora.B @ lora.A)).detach().cpu().float().clone()
-        delta_map[layer_name] = delta_weight
+    for module_name in target_module_names:
+        final_weight = model.get_submodule(module_name).weight.detach().cpu().float().clone()
+        delta_weight = final_weight - initial_weights[module_name]
+        delta_map[module_name] = delta_weight
 
         svdvals = torch.linalg.svdvals(delta_weight)
-        svd_map[layer_name] = svdvals
+        svd_map[module_name] = svdvals
 
         energy = svdvals.pow(2)
         total_energy = energy.sum().item()
@@ -245,7 +203,7 @@ if __name__ == "__main__":
         spectral_norm = svdvals[0].item() if svdvals.numel() > 0 else 0.0
         stable_rank = (fro_norm ** 2) / (spectral_norm ** 2) if spectral_norm > 0 else 0.0
 
-        layer_stats[layer_name] = {
+        layer_stats[module_name] = {
             "shape": list(delta_weight.shape),
             "fro_norm": fro_norm,
             "spectral_norm": spectral_norm,
@@ -261,7 +219,7 @@ if __name__ == "__main__":
 
     total_time = time.time() - total_start
     summary = {
-        "method": "lora",
+        "method": "full_finetune",
         "total_params": n_total,
         "trainable_params": n_treinaveis,
         "trainable_pct": 100 * n_treinaveis / n_total,

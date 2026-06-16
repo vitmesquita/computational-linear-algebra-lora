@@ -1,6 +1,5 @@
-
-# linha 2 — adicionar:
 from torch.utils.data import Dataset
+
 
 class WikiTextDataset(Dataset):
     def __init__(self, texts, tokenizer, max_length=128):
@@ -12,7 +11,7 @@ class WikiTextDataset(Dataset):
                     truncation=True,
                     max_length=max_length,
                     padding="max_length",
-                    return_tensors="pt"
+                    return_tensors="pt",
                 )
                 self.examples.append(tokens["input_ids"].squeeze(0))
 
