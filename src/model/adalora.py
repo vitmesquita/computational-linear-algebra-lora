@@ -148,17 +148,20 @@ if __name__ == "__main__":
     print('Replacing layers')
     for block in model.transformer.h:
         block.attn.c_attn = AdaLoRALinear(block.attn.c_attn, rank=rank, alpha=alpha, beta_1=beta_1, beta_2=beta_2)
+        block.attn.c_proj = AdaLoRALinear(block.attn.c_proj, rank=rank, alpha=alpha, beta_1=beta_1, beta_2=beta_2)
         block.mlp.c_fc = AdaLoRALinear(block.mlp.c_fc, rank=rank, alpha=alpha, beta_1=beta_1, beta_2=beta_2)
         block.mlp.c_proj = AdaLoRALinear(block.mlp.c_proj, rank=rank, alpha=alpha, beta_1=beta_1, beta_2=beta_2)
 
-    print('Verificando sanidade...')
+    print('Sanity check...')
+    for block in model.transformer.h:
+        ada = block.attn.c_attn
+        assert (ada.P @ (ada.Lambda.unsqueeze(1) * ada.Q)).abs().max().item() == 0.0, "ΔW não é zero no início"
+
     n_treinaveis = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
     print(f"Parâmetros treináveis: {n_treinaveis:,} / {n_total:,} ({100*n_treinaveis/n_total:.3f}%)")
 
-    for block in model.transformer.h:
-        ada = block.attn.c_attn
-        assert (ada.P @ (ada.Lambda.unsqueeze(1) * ada.Q)).abs().max().item() == 0.0, "ΔW não é zero no início"
+
 
     model = model.to(device)
     for module in model.modules():
@@ -333,6 +336,7 @@ if __name__ == "__main__":
     for idx, block in enumerate(model.transformer.h):
         target_layers = {
             f"transformer.h.{idx}.attn.c_attn": block.attn.c_attn,
+            f"transformer.h.{idx}.attn.c_proj": block.attn.c_proj,
             f"transformer.h.{idx}.mlp.c_fc": block.mlp.c_fc,
             f"transformer.h.{idx}.mlp.c_proj": block.mlp.c_proj,
         }

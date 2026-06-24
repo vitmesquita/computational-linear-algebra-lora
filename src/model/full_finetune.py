@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 import random
 import time
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
+from transformers import GPT2LMHeadModel, GPT2Tokenizer, get_linear_schedule_with_warmup
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from load_dataset import WikiTextDataset
@@ -37,6 +38,7 @@ if __name__ == "__main__":
     initial_weights = {}
     for idx, _ in enumerate(model.transformer.h):
         target_module_names.append(f"transformer.h.{idx}.attn.c_attn")
+        target_module_names.append(f"transformer.h.{idx}.attn.c_proj")
         target_module_names.append(f"transformer.h.{idx}.mlp.c_fc")
         target_module_names.append(f"transformer.h.{idx}.mlp.c_proj")
     for module_name in target_module_names:
@@ -50,6 +52,9 @@ if __name__ == "__main__":
 
     max_length = 128
     batch_size = 1
+    gradient_accumulation_steps = 16
+    learning_rate = 5e-5
+    max_grad_norm = 1.0
     num_workers = 2
     num_epochs = 3
     max_train_examples = None
@@ -67,13 +72,21 @@ if __name__ == "__main__":
     if max_test_examples is not None:
         test_texts = test_texts[:max_test_examples]
 
-    train_dataset = WikiTextDataset(train_texts, tokenizer, max_length=max_length)
-    test_dataset = WikiTextDataset(test_texts, tokenizer, max_length=max_length)
+    train_dataset = WikiTextDataset(train_texts, tokenizer, max_length=max_length, return_dict=True)
+    test_dataset = WikiTextDataset(test_texts, tokenizer, max_length=max_length, return_dict=True)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    effective_batch_size = batch_size * gradient_accumulation_steps
+    total_update_steps = max(1, math.ceil(len(train_loader) / gradient_accumulation_steps) * num_epochs)
+    warmup_steps = max(1, int(0.05 * total_update_steps))
 
-    if Path("/content").exists():
-        output_root = Path("/content/drive/MyDrive/cla_lora_runs")
+    drive_root = Path("/content/drive/MyDrive")
+    if drive_root.exists():
+        output_root = drive_root / "cla_lora_runs"
+        print(f"Saving artifacts to Google Drive: {output_root}")
+    elif Path("/content").exists():
+        output_root = Path("/content/cla_lora_runs")
+        print(f"Google Drive not mounted. Saving to temporary session storage: {output_root}")
     else:
         output_root = Path("outputs/cla_lora_runs")
     run_name = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -87,6 +100,11 @@ if __name__ == "__main__":
         "dataset_config": "wikitext-2-raw-v1",
         "max_length": max_length,
         "batch_size": batch_size,
+        "learning_rate": learning_rate,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "max_grad_norm": max_grad_norm,
+        "warmup_steps": warmup_steps,
+        "effective_batch_size": effective_batch_size,
         "num_workers": num_workers,
         "num_epochs": num_epochs,
         "seed": seed,
@@ -99,37 +117,84 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=2e-4,
+        lr=learning_rate,
         weight_decay=0.01
+    )
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_update_steps,
     )
 
     history = []
     total_start = time.time()
 
+    def evaluate(dataloader):
+        model.eval()
+        total_loss = 0.0
+        total_tokens = 0
+        with torch.no_grad():
+            for batch in dataloader:
+                input_ids = batch["input_ids"].to(device)
+                attention_mask = batch["attention_mask"].to(device)
+                labels = batch["labels"].to(device)
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                )
+                valid_tokens = labels.ne(-100).sum().item()
+                total_loss += outputs.loss.item() * valid_tokens
+                total_tokens += valid_tokens
+        return total_loss / max(total_tokens, 1)
+
+    def evaluate_legacy(dataloader):
+        model.eval()
+        total_loss = 0.0
+        total_batches = 0
+        with torch.no_grad():
+            for batch in dataloader:
+                input_ids = batch["input_ids"].to(device)
+                outputs = model(input_ids=input_ids, labels=input_ids)
+                total_loss += outputs.loss.item()
+                total_batches += 1
+        return total_loss / max(total_batches, 1)
+
     for epoch in range(num_epochs):
         epoch_start = time.time()
-        total_loss = 0.0
+        legacy_online_total_loss = 0.0
         model.train()
+        optimizer.zero_grad(set_to_none=True)
 
-        for batch in train_loader:
-            input_ids = batch.to(device)
-            optimizer.zero_grad()
-            outputs = model(input_ids=input_ids, labels=input_ids)
+        for step, batch in enumerate(train_loader, start=1):
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch["labels"].to(device)
+
+            # Keep the legacy metric separate so the masked optimization path stays unchanged.
+            with torch.no_grad():
+                legacy_outputs = model(input_ids=input_ids, labels=input_ids)
+                legacy_online_total_loss += legacy_outputs.loss.item()
+
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+            )
             loss = outputs.loss
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+            (loss / gradient_accumulation_steps).backward()
 
-        avg_loss = total_loss / len(train_loader)
+            should_step = step % gradient_accumulation_steps == 0 or step == len(train_loader)
+            if should_step:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
 
-        model.eval()
-        total_test_loss = 0.0
-        with torch.no_grad():
-            for batch in test_loader:
-                input_ids = batch.to(device)
-                outputs = model(input_ids=input_ids, labels=input_ids)
-                total_test_loss += outputs.loss.item()
-        avg_test_loss = total_test_loss / len(test_loader)
+        avg_loss = evaluate(train_loader)
+        avg_test_loss = evaluate(test_loader)
+        legacy_test_loss = evaluate_legacy(test_loader)
+        legacy_online_train_loss = legacy_online_total_loss / max(len(train_loader), 1)
 
         epoch_time = time.time() - epoch_start
         cumulative_time = time.time() - total_start
@@ -138,6 +203,8 @@ if __name__ == "__main__":
                 "epoch": epoch,
                 "train_loss": avg_loss,
                 "test_loss": avg_test_loss,
+                "legacy_test_loss": legacy_test_loss,
+                "legacy_online_train_loss": legacy_online_train_loss,
                 "epoch_time_sec": epoch_time,
                 "cumulative_time_sec": cumulative_time,
             }
@@ -150,6 +217,8 @@ if __name__ == "__main__":
                     "epoch",
                     "train_loss",
                     "test_loss",
+                    "legacy_test_loss",
+                    "legacy_online_train_loss",
                     "epoch_time_sec",
                     "cumulative_time_sec",
                 ],
@@ -225,6 +294,8 @@ if __name__ == "__main__":
         "trainable_pct": 100 * n_treinaveis / n_total,
         "final_train_loss": history[-1]["train_loss"],
         "final_test_loss": history[-1]["test_loss"],
+        "final_legacy_test_loss": history[-1]["legacy_test_loss"],
+        "final_legacy_online_train_loss": history[-1]["legacy_online_train_loss"],
         "total_time_sec": total_time,
         "run_path": str(run_dir),
         "completed_at": datetime.now(timezone.utc).isoformat(),

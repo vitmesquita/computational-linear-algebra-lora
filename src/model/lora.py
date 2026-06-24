@@ -69,6 +69,9 @@ if __name__ == "__main__":
     print('Replacing layers')
     for block in model.transformer.h:
         block.attn.c_attn = LoRALinear(block.attn.c_attn, rank=rank, alpha=alpha)
+        block.attn.c_proj = LoRALinear(block.attn.c_proj, rank=rank, alpha=alpha)
+        block.mlp.c_fc = LoRALinear(block.mlp.c_fc, rank=rank, alpha=alpha)
+        block.mlp.c_proj = LoRALinear(block.mlp.c_proj, rank=rank, alpha=alpha)
 
     print('Verificando sanidade...')
 
@@ -224,35 +227,40 @@ if __name__ == "__main__":
     svd_map = {}
     layer_stats = {}
     for idx, block in enumerate(model.transformer.h):
-        layer_name = f"transformer.h.{idx}.attn.c_attn"
-        lora = block.attn.c_attn
-        delta_weight = ((alpha / rank) * (lora.B @ lora.A)).detach().cpu().float().clone()
-        delta_map[layer_name] = delta_weight
-
-        svdvals = torch.linalg.svdvals(delta_weight)
-        svd_map[layer_name] = svdvals
-
-        energy = svdvals.pow(2)
-        total_energy = energy.sum().item()
-        energy_90_rank = 0
-        energy_95_rank = 0
-        if total_energy > 0:
-            cumulative = torch.cumsum(energy, dim=0) / total_energy
-            energy_90_rank = int((cumulative >= 0.90).nonzero(as_tuple=False)[0].item() + 1)
-            energy_95_rank = int((cumulative >= 0.95).nonzero(as_tuple=False)[0].item() + 1)
-
-        fro_norm = torch.linalg.matrix_norm(delta_weight, ord="fro").item()
-        spectral_norm = svdvals[0].item() if svdvals.numel() > 0 else 0.0
-        stable_rank = (fro_norm ** 2) / (spectral_norm ** 2) if spectral_norm > 0 else 0.0
-
-        layer_stats[layer_name] = {
-            "shape": list(delta_weight.shape),
-            "fro_norm": fro_norm,
-            "spectral_norm": spectral_norm,
-            "stable_rank": stable_rank,
-            "energy_90_rank": energy_90_rank,
-            "energy_95_rank": energy_95_rank,
+        target_layers = {
+            f"transformer.h.{idx}.attn.c_attn": block.attn.c_attn,
+            f"transformer.h.{idx}.attn.c_proj": block.attn.c_proj,
+            f"transformer.h.{idx}.mlp.c_fc": block.mlp.c_fc,
+            f"transformer.h.{idx}.mlp.c_proj": block.mlp.c_proj,
         }
+        for layer_name, module in target_layers.items():
+            delta_weight = ((alpha / rank) * (module.B @ module.A)).detach().cpu().float().clone()
+            delta_map[layer_name] = delta_weight
+
+            svdvals = torch.linalg.svdvals(delta_weight)
+            svd_map[layer_name] = svdvals
+
+            energy = svdvals.pow(2)
+            total_energy = energy.sum().item()
+            energy_90_rank = 0
+            energy_95_rank = 0
+            if total_energy > 0:
+                cumulative = torch.cumsum(energy, dim=0) / total_energy
+                energy_90_rank = int((cumulative >= 0.90).nonzero(as_tuple=False)[0].item() + 1)
+                energy_95_rank = int((cumulative >= 0.95).nonzero(as_tuple=False)[0].item() + 1)
+
+            fro_norm = torch.linalg.matrix_norm(delta_weight, ord="fro").item()
+            spectral_norm = svdvals[0].item() if svdvals.numel() > 0 else 0.0
+            stable_rank = (fro_norm ** 2) / (spectral_norm ** 2) if spectral_norm > 0 else 0.0
+
+            layer_stats[layer_name] = {
+                "shape": list(delta_weight.shape),
+                "fro_norm": fro_norm,
+                "spectral_norm": spectral_norm,
+                "stable_rank": stable_rank,
+                "energy_90_rank": energy_90_rank,
+                "energy_95_rank": energy_95_rank,
+            }
 
     torch.save(delta_map, run_dir / "target_deltas.pt")
     torch.save(svd_map, run_dir / "target_svdvals.pt")

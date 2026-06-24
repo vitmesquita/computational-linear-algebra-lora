@@ -1,1 +1,6 @@
 .env
+cla_lora_runs/
+cla_lora_runs/
+outputs/
+__pycache__/
+*.pyc
