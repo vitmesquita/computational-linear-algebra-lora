@@ -4,3 +4,4 @@ cla_lora_runs/
 outputs/
 __pycache__/
 *.pyc
+*.code-workspace
