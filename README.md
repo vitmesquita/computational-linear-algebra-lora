@@ -1,4 +1,4 @@
-# Computational Linear Algebra LoRA
+# Decomposição em Valores Singulares na Adaptação de Baixo Posto de Modelos de Linguagem
 
 Repositório de pesquisa para comparar `full fine-tuning`, `LoRA` e `AdaLoRA` em `GPT-2` com `WikiText-2`.
 
