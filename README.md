@@ -8,7 +8,7 @@ O projeto combina treino de modelos com uma etapa de análise espectral e algéb
 
 Este repositório foi organizado para apoiar um estudo acadêmico sobre adaptação eficiente de modelos de linguagem. O foco principal é observar como diferentes estratégias de ajuste alteram os pesos do modelo e como essas alterações podem ser comparadas por métricas clássicas de álgebra linear computacional.
 
-No estado atual, os experimentos usam `GPT-2` da biblioteca `transformers` e o conjunto `Salesforce/wikitext`, configuração `wikitext-2-raw-v1`. Os scripts treinam o modelo, salvam artefatos intermediários e finais, e o notebook em [analysis/article_analysis.ipynb](analysis/article_analysis.ipynb) lê esses artefatos para gerar tabelas e gráficos.
+No estado atual, os experimentos usam `GPT-2` da biblioteca `transformers` e o conjunto `Salesforce/wikitext`, configuração `wikitext-2-raw-v1`. Os scripts treinam o modelo, salvam artefatos intermediários e finais, e o notebook em [notebooks/article_analysis.ipynb](notebooks/article_analysis.ipynb) lê esses artefatos para gerar tabelas e gráficos.
 
 ## Objetivos do Estudo
 
@@ -26,7 +26,7 @@ No estado atual, os experimentos usam `GPT-2` da biblioteca `transformers` e o c
 | [src/model/metrics](src/model/metrics) | Construção das métricas de treino e de hardware, além dos schemas dos históricos salvos. |
 | [src/model/runtime](src/model/runtime) | Infraestrutura comum dos experimentos: seed, device, dataloaders, config, checkpoints e persistência de artefatos. |
 | [src/model/analysis](src/model/analysis) | Análise algébrica pós-treino, incluindo deltas, SVD e estatísticas espectrais por camada. |
-| [analysis](analysis) | Notebook de análise para gerar tabelas e gráficos a partir dos artefatos salvos. |
+| [notebooks](notebooks) | Notebook de análise para gerar tabelas e gráficos a partir dos artefatos salvos. |
 | `cla_lora_runs/` | Diretório legado citado pelo notebook para runs antigos, quando presente no ambiente local. |
 | `outputs/cla_lora_runs` | Diretório criado localmente pelos scripts atuais para novos experimentos. |
 
@@ -54,15 +54,15 @@ poetry install
 Observações:
 
 - Os comandos de execução devem continuar sendo feitos a partir da raiz do repositório.
-- Os entrypoints em `src/model` agora importam helpers organizados em subpastas como `data`, `metrics`, `runtime` e `analysis`, mas o modo de execução permanece o mesmo.
-- O notebook de análise usa `pandas` e um ambiente Jupyter ou VS Code Notebook. Esses itens não aparecem explicitamente no `pyproject.toml` atual.
+- Os experimentos agora devem ser executados como módulos do pacote `model`, o que evita depender do diretório `src/model` no `sys.path`.
+- O notebook de análise usa `pandas`, `matplotlib` e um ambiente Jupyter ou VS Code Notebook.
 
 ## Como Executar Cada Experimento
 
 ### Full Fine-Tuning
 
 ```bash
-poetry run python src/model/full_finetune.py
+poetry run python -m model.full_finetune
 ```
 
 Esse script treina todos os parâmetros do `GPT-2`, salva métricas por época e também registra artefatos algébricos dos deltas finais das camadas monitoradas.
@@ -70,7 +70,7 @@ Esse script treina todos os parâmetros do `GPT-2`, salva métricas por época e
 ### LoRA
 
 ```bash
-poetry run python src/model/lora.py
+poetry run python -m model.lora
 ```
 
 Esse script congela o backbone, substitui camadas lineares alvo por módulos `LoRALinear` e salva deltas finais, espectros singulares e estatísticas por camada.
@@ -78,7 +78,7 @@ Esse script congela o backbone, substitui camadas lineares alvo por módulos `Lo
 ### AdaLoRA
 
 ```bash
-poetry run python src/model/adalora.py
+poetry run python -m model.adalora
 ```
 
 Esse script segue a lógica de adaptação de posto com orçamento variável, mantendo informações adicionais como `effective_rank` nas estatísticas finais por camada.
@@ -100,17 +100,17 @@ Observações:
 - `full_finetune.py` usa `/content/drive/MyDrive/cla_lora_runs/full_finetune/<timestamp>/` quando o Google Drive está montado. Se `/content` existir sem Drive montado, ele usa `/content/cla_lora_runs/full_finetune/<timestamp>/`.
 - `lora.py` e `adalora.py` verificam apenas a existência de `/content` e, nesse caso, direcionam a saída para `/content/drive/MyDrive/cla_lora_runs/<metodo>/<timestamp>/`.
 
-## Como Abrir e Usar `analysis/article_analysis.ipynb`
+## Como Abrir e Usar `notebooks/article_analysis.ipynb`
 
 1. Garanta que existam artefatos completos para os métodos que você quer comparar.
-2. Abra [analysis/article_analysis.ipynb](analysis/article_analysis.ipynb) em Jupyter ou VS Code.
-3. Revise as constantes `RUN_ROOT`, `FULL_FINETUNE_ROOT` e `RUN_NAMES` logo nas primeiras células.
+2. Abra [notebooks/article_analysis.ipynb](notebooks/article_analysis.ipynb) em Jupyter ou VS Code.
+3. Revise as constantes `RUN_ROOT` e `SELECTED_RUNS` logo nas primeiras células.
 4. Execute as células em ordem para carregar os runs mais recentes configurados nesses diretórios.
 
 Observação importante:
 
-- No estado atual, o notebook procura `LoRA` e `AdaLoRA` dentro de `cla_lora_runs/lora_session/lora/` e `cla_lora_runs/adalora_session/adalora/`, enquanto `full_finetune` é buscado em `outputs/cla_lora_runs/full_finetune/`.
-- Se você gerar novos runs usando os scripts atuais, pode ser necessário ajustar `RUN_NAMES` e `FULL_FINETUNE_ROOT` para apontar para os diretórios corretos.
+- No estado atual, o notebook usa `outputs/cla_lora_runs` como raiz padrão e recua automaticamente para `cla_lora_runs/` se esse diretório legado existir localmente.
+- Para cada método, você precisa preencher manualmente `SELECTED_RUNS` com o nome do run que deseja comparar.
 
 ## Artefatos Gerados
 

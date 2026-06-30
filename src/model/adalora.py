@@ -4,10 +4,10 @@ import torch
 import torch.nn as nn
 from transformers import GPT2LMHeadModel
 
-from analysis.algebraic_analysis import build_adalora_delta_map, build_svd_artifacts, save_spectral_artifacts
-from metrics.hardware_metrics import build_hardware_history_row, build_hardware_info, start_hardware_monitor
-from metrics.training_metrics import build_epoch_history_row, build_pretrain_history_row
-from runtime.experiment_utils import (
+from model.analysis.algebraic_analysis import build_adalora_delta_map, build_svd_artifacts, save_spectral_artifacts
+from model.metrics.hardware_metrics import build_hardware_history_row, build_hardware_info, start_hardware_monitor
+from model.metrics.training_metrics import build_epoch_history_row, build_pretrain_history_row
+from model.runtime.experiment_utils import (
     build_run_config,
     build_run_dir,
     build_run_summary,
@@ -116,7 +116,7 @@ class AdaLoRALinear(nn.Module):
         return ipt
 
 
-if __name__ == "__main__":
+def main():
     seed = 42
     set_seed(seed)
 
@@ -390,3 +390,7 @@ if __name__ == "__main__":
 
     print(f"Loss final de treino: {history[-1]['train_loss']:.4f}")
     print(f"Loss final de teste: {history[-1]['test_loss']:.4f}")
+
+
+if __name__ == "__main__":
+    main()

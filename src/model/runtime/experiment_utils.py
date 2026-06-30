@@ -10,9 +10,9 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import GPT2Tokenizer
 
-from data.load_dataset import WikiTextDataset
-from metrics.hardware_metrics import HARDWARE_HISTORY_FIELDS, build_hardware_summary
-from metrics.training_metrics import TRAIN_HISTORY_FIELDS
+from model.data.load_dataset import WikiTextDataset
+from model.metrics.hardware_metrics import HARDWARE_HISTORY_FIELDS, build_hardware_summary
+from model.metrics.training_metrics import TRAIN_HISTORY_FIELDS
 
 
 def set_seed(seed):

@@ -1,5 +1,7 @@
+.DS_Store
 .env
-cla_lora_runs/
+.deepeval/
+.ipynb_checkpoints/
 cla_lora_runs/
 outputs/
 __pycache__/
