@@ -21,6 +21,7 @@ No estado atual, os experimentos usam `GPT-2` da biblioteca `transformers` e o c
 
 | Caminho | Descrição |
 | --- | --- |
+| [docs](docs) | Artigo que descreve o trabalho implementado |
 | [src/model](src/model) | Entrypoints de treino e submódulos auxiliares organizados por responsabilidade. |
 | [src/model/data](src/model/data) | Camada de dados, atualmente com o dataset `WikiTextDataset`. |
 | [src/model/metrics](src/model/metrics) | Construção das métricas de treino e de hardware, além dos schemas dos históricos salvos. |
